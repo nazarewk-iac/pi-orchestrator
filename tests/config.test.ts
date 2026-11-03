@@ -135,6 +135,7 @@ test("loadConfig: missing file yields full defaults", () => {
 			childBlockedTools: [],
 			childExtensions: [],
 			forwardParentPrompt: true,
+			childContext: { default: "auto", providers: ["brys"], models: [], fullAgents: [] },
 			builtinFleet: true,
 			modelOverrides: {},
 			maxTurns: 50,

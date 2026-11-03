@@ -45,7 +45,30 @@ const CHILD_MINIMAL_RULES = `# Sub-agent rules
 - Report concretely: the file and line range, the commands you ran, and the cheapest check that proves it.
 - No speculation. If you did not see it, say so.`;
 
-const minimalChildContext = (): boolean => process.env.PI_ORCHESTRATOR_CHILD_MINIMAL === "1";
+/**
+ * Decide a child's context policy. An explicit env value wins (1 minimal, 0 full). Otherwise the
+ * orchestrator config decides: `childContext.default` auto|minimal|full, `providers`/`models` that
+ * default to minimal in auto mode, and `fullAgents` as a per-agent opt-out.
+ */
+function useMinimalChildContext(agentName: string, model: string | undefined, cwd: string): boolean {
+	const env = process.env.PI_ORCHESTRATOR_CHILD_MINIMAL;
+	if (env === "1") return true;
+	if (env === "0") return false;
+	let cc: ReturnType<typeof loadConfig>["childContext"];
+	try {
+		cc = loadConfig(cwd).childContext;
+	} catch {
+		return false;
+	}
+	if (!cc) return false;
+	if (cc.fullAgents.includes(agentName)) return false;
+	if (cc.default === "minimal") return true;
+	if (cc.default === "full") return false;
+	const provider = model?.split("/")[0] ?? "";
+	if (provider && cc.providers.some((p) => p === "*" || provider === p || provider.startsWith(`${p}/`))) return true;
+	if (model && cc.models.some((m) => m === "*" || model.includes(m))) return true;
+	return false;
+}
 import { createHash } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import * as fs from "node:fs";
@@ -58,7 +81,7 @@ import { getMarkdownTheme, withFileMutationQueue } from "@earendil-works/pi-codi
 import { Box, Container, Markdown, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { AgentConfig } from "./agents.ts";
-import { toolMatchesAnyMatcher } from "./config.ts";
+import { loadConfig, toolMatchesAnyMatcher } from "./config.ts";
 import { createRunWatcher, type RunDelivery, type RunHandle, type RunWatcher, type RunWatcherStartInput, type RunningTask } from "./run-lifecycle.ts";
 export { createRunWatcher, type RunDelivery, type RunWatcher } from "./run-lifecycle.ts";
 
@@ -818,6 +841,8 @@ export function buildChildSpawnArgs(opts: {
 	/** Extension sources (orchestrator.json `childExtensions`) loaded via pi's
 	 *  repeatable `-e` flag; non-empty also implies `--no-extensions`. */
 	extensions: string[];
+	/** Minimal child context: no context files, no skills, no templates. */
+	minimal?: boolean;
 	/** Tool names and `*` patterns unregistered at spawn via `--exclude-tools`
 	 *  (ADR-0008, ADR-0017) — already resolved from matchers via
 	 *  resolveChildExcludeTools. */
@@ -831,7 +856,7 @@ export function buildChildSpawnArgs(opts: {
 	sessionDir?: string;
 }): string[] {
 	const args: string[] = ["--mode", "rpc"];
-	if (minimalChildContext()) args.push("--no-context-files", "--no-skills", "--no-prompt-templates");
+	if (opts.minimal) args.push("--no-context-files", "--no-skills", "--no-prompt-templates");
 	if (opts.model) args.push("--model", opts.model);
 	if (opts.thinkingLevel) args.push("--thinking", opts.thinkingLevel);
 	if (opts.tools && opts.tools.length > 0) args.push("--tools", opts.tools.join(","));
@@ -1064,8 +1089,10 @@ export async function runSingleAgent(opts: RunSingleAgentOptions): Promise<Singl
 	// one JSONL, so the stable cache-shard id is only used for ephemeral runs.
 	const persistSessions = sessionOpts.persist;
 	const sessionDir = sessionOpts.parentSessionFile ? path.dirname(sessionOpts.parentSessionFile) : undefined;
+	const minimal = useMinimalChildContext(agent.name, model, cwd ?? defaultCwd);
 	const args = buildChildSpawnArgs({
 		model,
+		minimal,
 		sessionId: persistSessions ? undefined : stableSessionId(agent.name, model),
 		thinkingLevel: resolveThinkingLevel(agent, dispatchDefaults),
 		tools: agent.tools,
@@ -1137,7 +1164,7 @@ export async function runSingleAgent(opts: RunSingleAgentOptions): Promise<Singl
 		// blocked tools writes nothing (empty-trim guard).
 		const sysPrompt =
 			agent.systemPrompt +
-			(minimalChildContext() ? `\n\n${CHILD_MINIMAL_RULES}` : "") +
+			(minimal ? `\n\n${CHILD_MINIMAL_RULES}` : "") +
 			(blockedTools.length
 				? `\n\n# Tool policy\nThese tools are blocked by orchestrator policy and will fail if called: ${blockedTools.join(", ")}. Accomplish the task with the remaining tools.`
 				: "");
@@ -1159,7 +1186,7 @@ export async function runSingleAgent(opts: RunSingleAgentOptions): Promise<Singl
 		// provider prompt-cache hits. The child-side hook also delta-strips
 		// segments the child already receives verbatim (project_context, cwd)
 		// from the forwarded copy — see stripDuplicatedParentSegments.
-		if (parentPrompt?.trim() && !minimalChildContext()) {
+		if (parentPrompt?.trim() && !minimal) {
 			const tmp = await writePromptToTempFile(`${agent.name}-parent`, parentPrompt);
 			tmpParentPromptDir = tmp.dir;
 			parentPromptFilePath = tmp.filePath;

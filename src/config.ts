@@ -186,6 +186,7 @@ export function loadConfig(cwd: string = process.cwd()): OrchestratorConfig {
 							Object.entries(raw.modelOverrides).filter(([, v]) => typeof v === "string" && v.trim() !== ""),
 						)
 					: { ...DEFAULT_CONFIG.modelOverrides },
+			childContext: parseChildContext(raw.childContext) ?? DEFAULT_CONFIG.childContext,
 			maxTurns: parseMaxTurns(raw.maxTurns) ?? DEFAULT_CONFIG.maxTurns,
 			maxConcurrency: parseSafeInteger(raw.maxConcurrency, 1) ?? DEFAULT_CONFIG.maxConcurrency,
 			maxQueuedRuns: parseSafeInteger(raw.maxQueuedRuns, 0) ?? DEFAULT_CONFIG.maxQueuedRuns,
@@ -206,6 +207,23 @@ export function loadConfig(cwd: string = process.cwd()): OrchestratorConfig {
 			maxTurns: DEFAULT_CONFIG.maxTurns,
 		};
 	}
+}
+
+/** Child-context policy, normalized. Unknown or invalid fields fall back to defaults. */
+function parseChildContext(value: unknown): OrchestratorConfig["childContext"] | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const raw = value as Record<string, unknown>;
+	const d = raw.default;
+	const def: OrchestratorConfig["childContext"]["default"] =
+		d === "minimal" || d === "full" || d === "auto" ? d : DEFAULT_CONFIG.childContext.default;
+	const list = (v: unknown, fallback: string[]): string[] =>
+		Array.isArray(v) ? v.filter((s): s is string => typeof s === "string" && s.trim().length > 0) : fallback;
+	return {
+		default: def,
+		providers: list(raw.providers, [...DEFAULT_CONFIG.childContext.providers]),
+		models: list(raw.models, [...DEFAULT_CONFIG.childContext.models]),
+		fullAgents: list(raw.fullAgents, [...DEFAULT_CONFIG.childContext.fullAgents]),
+	};
 }
 
 /** Positive integer or undefined (rejects strings, floats, zero, negatives — no coercion). */

@@ -65,6 +65,24 @@ const configDefinition = Type.Object({
 		default: {},
 		examples: [{ scout: "openrouter/some-cheap-model" }],
 	}),
+	childContext: Type.Object({
+		default: Type.Union([Type.Literal("auto"), Type.Literal("minimal"), Type.Literal("full")], {
+			description: "How much context a child loads. auto (default) is minimal for the providers/models listed below, otherwise full. minimal is always minimal; full is never. A child that gets minimal context spawns with --no-context-files --no-skills --no-prompt-templates, does not receive the forwarded parent prompt, and gets a compact rules block.",
+			default: "auto",
+		}),
+		providers: Type.Array(nonblankString, {
+			description: "Provider name prefixes that default to minimal context in auto mode.",
+			default: ["brys"],
+		}),
+		models: Type.Array(nonblankString, {
+			description: "Model id substrings that default to minimal context in auto mode.",
+			default: [],
+		}),
+		fullAgents: Type.Array(nonblankString, {
+			description: "Agent names that always get full context (case-sensitive opt-out), even in auto or minimal mode.",
+			default: [],
+		}),
+	}, { additionalProperties: false }),
 	maxTurns: Type.Integer({
 		description: "Default subagent turn budget; per-agent frontmatter maxTurns overrides it. Soft grace asks the child to wrap up at the budget; hard kill at budget + 5 reports turn-budget-exhausted and preserves partial output. Must be a positive integer; invalid runtime values fall back to the default without coercion.",
 		minimum: 1,
