@@ -27,6 +27,25 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+
+/**
+ * Minimal-context mode for children (nix-configs fork). When the environment sets
+ * PI_ORCHESTRATOR_CHILD_MINIMAL=1, a child:
+ *   - loads no project context files (AGENTS.md/CLAUDE.md), no skills, no templates;
+ *   - does not receive the forwarded parent prompt;
+ *   - gets this compact rule set instead.
+ * AGENTS.md is about 45% of a 16k child window and is mostly a docs table a child
+ * does not need. See docs/tasks/2026-11/pi-context-minimization/.
+ */
+const CHILD_MINIMAL_RULES = `# Sub-agent rules
+
+- Simple technical English. Short sentences, active voice.
+- Do only the task. If it names one file, touch one file. If it is ambiguous or needs a second file, stop and say so in one line.
+- No version control unless told. Do not run jj or git, do not commit.
+- Report concretely: the file and line range, the commands you ran, and the cheapest check that proves it.
+- No speculation. If you did not see it, say so.`;
+
+const minimalChildContext = (): boolean => process.env.PI_ORCHESTRATOR_CHILD_MINIMAL === "1";
 import { createHash } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import * as fs from "node:fs";
@@ -812,6 +831,7 @@ export function buildChildSpawnArgs(opts: {
 	sessionDir?: string;
 }): string[] {
 	const args: string[] = ["--mode", "rpc"];
+	if (minimalChildContext()) args.push("--no-context-files", "--no-skills", "--no-prompt-templates");
 	if (opts.model) args.push("--model", opts.model);
 	if (opts.thinkingLevel) args.push("--thinking", opts.thinkingLevel);
 	if (opts.tools && opts.tools.length > 0) args.push("--tools", opts.tools.join(","));
@@ -1117,6 +1137,7 @@ export async function runSingleAgent(opts: RunSingleAgentOptions): Promise<Singl
 		// blocked tools writes nothing (empty-trim guard).
 		const sysPrompt =
 			agent.systemPrompt +
+			(minimalChildContext() ? `\n\n${CHILD_MINIMAL_RULES}` : "") +
 			(blockedTools.length
 				? `\n\n# Tool policy\nThese tools are blocked by orchestrator policy and will fail if called: ${blockedTools.join(", ")}. Accomplish the task with the remaining tools.`
 				: "");
@@ -1138,7 +1159,7 @@ export async function runSingleAgent(opts: RunSingleAgentOptions): Promise<Singl
 		// provider prompt-cache hits. The child-side hook also delta-strips
 		// segments the child already receives verbatim (project_context, cwd)
 		// from the forwarded copy — see stripDuplicatedParentSegments.
-		if (parentPrompt?.trim()) {
+		if (parentPrompt?.trim() && !minimalChildContext()) {
 			const tmp = await writePromptToTempFile(`${agent.name}-parent`, parentPrompt);
 			tmpParentPromptDir = tmp.dir;
 			parentPromptFilePath = tmp.filePath;
