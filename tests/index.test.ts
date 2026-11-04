@@ -440,6 +440,9 @@ function toolsetPi(tools?: any[]) {
 		registerCommand(name: string, def: any) {
 			((handlers as any).command ??= {})[name] = def.handler;
 		},
+		registerShortcut(shortcut: string, def: any) {
+			((handlers as any).shortcut ??= {})[shortcut] = def.handler;
+		},
 	};
 	return { stub, handlers, calls };
 }
