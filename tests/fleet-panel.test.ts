@@ -216,3 +216,35 @@ test("fleet panel: absent Atelier/event bus and throwing optional observers are 
 	}, () => ({ rows: ["idle"] }));
 	assert.doesNotThrow(() => { brokenBus.start(); brokenBus.update(); brokenBus.dispose(); });
 });
+
+test("live panel: an idle session shows per-agent session stats instead of bare names", () => {
+	const stats = {
+		agentStats: {},
+		agents: {},
+		perAgent: {
+			scout: { runs: 3, failed: 0, input: 21000, output: 1500, turns: 9, lastContextTokens: 9000 },
+			worker: { runs: 1, failed: 1, input: 4000, output: 200, turns: 2, lastContextTokens: 3000 },
+		},
+		totals: { runs: 4, failed: 1, input: 25000, output: 1700, turns: 11, lastContextTokens: 9000 },
+	} as unknown as Parameters<typeof renderFleetPanel>[3];
+	const panel = renderFleetPanel([], ["scout", "worker", "reviewer"], "engaged", stats);
+	assert.deepEqual(panel.rows, [
+		{ text: "ENGAGED · idle", role: "muted" },
+		{ text: "scout · 3 runs", role: "primary" },
+		{ text: "↑21k ↓1.5k · turn 9", role: "muted" },
+		{ text: "worker · 1 run, 1 failed", role: "caution" },
+		{ text: "↑4.0k ↓200 · turn 2", role: "muted" },
+		{ text: "• reviewer", role: "primary" },
+		{ text: "session · 4 runs · ↑25k ↓1.7k · 1 failed", role: "caution" },
+	]);
+});
+
+test("live panel: a running session keeps live rows and appends one session tally", () => {
+	const stats = {
+		perAgent: {},
+		totals: { runs: 7, failed: 0, input: 51000, output: 4000, turns: 20, lastContextTokens: 12000 },
+	} as unknown as Parameters<typeof renderFleetPanel>[3];
+	const panel = renderFleetPanel([task()], ["worker"], "engaged", stats);
+	assert.deepEqual(panel.rows.at(-1), { text: "session · 7 runs · ↑51k ↓4.0k", role: "dim" });
+	assert.ok(panel.rows.some((r) => r.text === "worker · turn 3"));
+});

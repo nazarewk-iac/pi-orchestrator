@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import { fleetHeaderLines, formatTokens, type OrchestratorMode } from "./delegate.ts";
+import type { SessionStatsSnapshot } from "./session-stats.ts";
 import type { RunningTask } from "./run-lifecycle.ts";
 
 // Public pi-atelier sidebar protocol v1. No import/runtime dependency on Atelier.
@@ -22,12 +23,35 @@ export interface FleetPanelRow {
 interface FleetPanelContent { rows: (string | FleetPanelRow)[] }
 
 /** Left-aligned text, not key/value fields: blank labels right-align in Atelier. */
-export function renderFleetPanel(tasks: RunningTask[], agentNames: string[], mode: OrchestratorMode): { rows: FleetPanelRow[] } {
+export function renderFleetPanel(
+	tasks: RunningTask[],
+	agentNames: string[],
+	mode: OrchestratorMode,
+	stats?: SessionStatsSnapshot,
+): { rows: FleetPanelRow[] } {
 	const rows: FleetPanelRow[] = [];
 	let groups: FleetPanelRow[][];
+	const statFor = (name: string) => stats?.perAgent[name];
+	const statLine = (name: string): FleetPanelRow[] | undefined => {
+		const stat = statFor(name);
+		if (!stat || stat.runs === 0) return undefined;
+		const failed = stat.failed > 0;
+		return [
+			{ text: `${name} · ${stat.runs} run${stat.runs === 1 ? "" : "s"}${failed ? `, ${stat.failed} failed` : ""}`, role: failed ? "caution" : "primary" },
+			{ text: `↑${formatTokens(stat.input)} ↓${formatTokens(stat.output)} · turn ${stat.turns}`, role: "muted" },
+		];
+	};
 	if (tasks.length === 0) {
+		// Idle: the live list is empty, so show what the session has spent per agent.
 		rows.push({ text: `${mode.toUpperCase()} · idle`, role: "muted" });
-		groups = agentNames.map((name) => [{ text: `• ${name}`, role: "primary" }]);
+		groups = agentNames.map((name) => statLine(name) ?? [{ text: `• ${name}`, role: "primary" }]);
+		const idleTotals = stats?.totals;
+		if (idleTotals && idleTotals.runs > 0) {
+			groups.push([{
+				text: `session · ${idleTotals.runs} run${idleTotals.runs === 1 ? "" : "s"} · ↑${formatTokens(idleTotals.input)} ↓${formatTokens(idleTotals.output)}${idleTotals.failed ? ` · ${idleTotals.failed} failed` : ""}`,
+				role: idleTotals.failed ? "caution" : "accent",
+			}]);
+		}
 		if (!groups.length) rows.push({ text: "(empty fleet)", role: "muted" });
 	} else {
 		const [title, counts] = fleetHeaderLines(tasks);
@@ -45,6 +69,14 @@ export function renderFleetPanel(tasks: RunningTask[], agentNames: string[], mod
 				{ text: `ctx ${formatTokens(task.contextTokens)} · ↑${formatTokens(task.inputTokens)} ↓${formatTokens(task.outputTokens)}`, role: "muted" },
 			];
 		});
+	}
+	// While running, keep the live rows first and append the session tally at the end.
+	const totals = stats?.totals;
+	if (tasks.length > 0 && totals && totals.runs > 0) {
+		groups = [...groups, [{
+			text: `session · ${totals.runs} run${totals.runs === 1 ? "" : "s"} · ↑${formatTokens(totals.input)} ↓${formatTokens(totals.output)}`,
+			role: "dim",
+		}]];
 	}
 	for (let i = 0; i < groups.length; i++) {
 		// Leave space for an overflow notice, and never split a Worker's details.

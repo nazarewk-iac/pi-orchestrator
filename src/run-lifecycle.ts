@@ -44,6 +44,8 @@ export interface RunWatcherDeps {
 	onIdle(): void;
 	now(): number;
 	onChange?(): void;
+	/** Exactly once per run, after the outcome is final (for session accounting). */
+	onSettled?(result: SingleResult): void;
 	limits?(): { maxConcurrency: number; maxQueuedRuns: number };
 }
 export interface RunWatcherStartInput {
@@ -194,6 +196,7 @@ export function createRunWatcher(deps: RunWatcherDeps): RunWatcher {
 			flush();
 		}
 		record.resolve(result);
+		try { deps.onSettled?.(record.outcome); } catch { /* Accounting must never break a run. */ }
 		drain();
 		publish();
 	}

@@ -83,6 +83,7 @@ import { Type } from "typebox";
 import type { AgentConfig } from "./agents.ts";
 import { loadConfig, toolMatchesAnyMatcher } from "./config.ts";
 import { createRunWatcher, type RunDelivery, type RunHandle, type RunWatcher, type RunWatcherStartInput, type RunningTask } from "./run-lifecycle.ts";
+import { createSessionStats, type SessionStats } from "./session-stats.ts";
 export { createRunWatcher, type RunDelivery, type RunWatcher } from "./run-lifecycle.ts";
 
 const MAX_PARALLEL_TASKS = 8;
@@ -128,6 +129,18 @@ export function fleetKey(runId: number, mode: "single" | "parallel" | "chain", i
 /** Current live-task snapshot (fleet widget data source; tests + status UI). */
 export function fleetTasksSnapshot(): RunningTask[] {
 	return activeWatcher?.snapshot() ?? [];
+}
+
+/** Per-agent tally for this session (fleet panel + /orchestrator status). */
+let sessionStats: SessionStats = createSessionStats();
+
+export function fleetStatsSnapshot() {
+	return sessionStats.snapshot();
+}
+
+/** Called on session start: stats never outlive the session they describe. */
+export function resetFleetStats(): void {
+	sessionStats = createSessionStats();
 }
 
 export function formatTokens(count: number): string {
@@ -1764,6 +1777,14 @@ export function registerDelegateTool(pi: any, deps: DelegateDeps): void {
 			return returned;
 		},
 		onIdle: () => deps.onIdle(),
+		onSettled: (result) => {
+			sessionStats.record(
+				result.agent,
+				{ input: result.usage.input, output: result.usage.output, contextTokens: result.usage.contextTokens, turns: result.usage.turns },
+				isFailedResult(result),
+				result.errorMessage,
+			);
+		},
 		onChange: () => {
 			try { deps.onFleetChange?.(); } catch { /* Optional UI cannot break the widget or owner. */ }
 			if (sessionContext) {

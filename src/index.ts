@@ -34,7 +34,7 @@ import {
 	type OrchestratorConfig,
 } from "./config.ts";
 import * as fs from "node:fs";
-import { abortActiveRuns, clearFleetWidget, fleetTasksSnapshot, hasRunningTasks, idleFleetWidgetLines, registerDelegateTool, type DelegateDeps } from "./delegate.ts";
+import { abortActiveRuns, clearFleetWidget, fleetStatsSnapshot, fleetTasksSnapshot, resetFleetStats, hasRunningTasks, idleFleetWidgetLines, registerDelegateTool, type DelegateDeps } from "./delegate.ts";
 import { createFleetPanel, renderFleetPanel } from "./fleet-panel.ts";
 import { buildPolicy } from "./policy.ts";
 import { truncateToWidth } from "./width.ts";
@@ -338,7 +338,7 @@ export default function (pi: any) {
 	let engaged = config.enabled;
 	let lastUi: any;
 	const fleetPanel = createFleetPanel(pi.events, () => renderFleetPanel(
-		fleetTasksSnapshot(), discoverAgents(config).map((a) => a.name), engaged ? "engaged" : "auto",
+		fleetTasksSnapshot(), discoverAgents(config).map((a) => a.name), engaged ? "engaged" : "auto", fleetStatsSnapshot(),
 	));
 	// AUTO (enabled:false) NEVER touches the active tool set. Which built-in
 	// tools are active is pi's concern (its `defaultTools` setting,
@@ -553,6 +553,8 @@ ${policyCache.get()}` };
 	// Run after the owner's session_start hook so discovery sees the cleared
 	// session, never the previous fleet. No terminal UI in RPC/print.
 	pi.on("session_start", (_event: any, ctx: any) => {
+		// Session accounting is per session, so a new session starts from zero.
+		resetFleetStats();
 		if (ctx?.mode === "tui") fleetPanel.start();
 	});
 
