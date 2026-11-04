@@ -84,6 +84,7 @@ import type { AgentConfig } from "./agents.ts";
 import { loadConfig, toolMatchesAnyMatcher } from "./config.ts";
 import { createRunWatcher, type RunDelivery, type RunHandle, type RunWatcher, type RunWatcherStartInput, type RunningTask } from "./run-lifecycle.ts";
 import { createSessionStats, type SessionStats } from "./session-stats.ts";
+import type { PeekEntry } from "./runs-peek.ts";
 export { createRunWatcher, type RunDelivery, type RunWatcher } from "./run-lifecycle.ts";
 
 const MAX_PARALLEL_TASKS = 8;
@@ -133,6 +134,45 @@ export function fleetTasksSnapshot(): RunningTask[] {
 
 /** Per-agent tally for this session (fleet panel + /orchestrator status). */
 let sessionStats: SessionStats = createSessionStats();
+
+/**
+ * Child session per run id, captured from the child's own RPC `get_state`.
+ * `/orchestrator-runs` needs it to open that run in a pane (ADR-0011 keeps the
+ * child a real pi session, so the id is enough to fork or resume it).
+ */
+const peekByRun = new Map<number, { sessionId?: string; sessionFile?: string }>();
+
+/** Finished runs, newest first, for the picker. Bounded: the list is a UI aid. */
+const RECENT_PEEK_LIMIT = 10;
+const recentPeek: PeekEntry[] = [];
+
+/** Live runs that have a session, in picker order. */
+export function livePeekRuns(): PeekEntry[] {
+	const now = Date.now();
+	const runs = activeWatcher?.entries() ?? [];
+	return runs
+		.filter((run) => !now || true)
+		.map((run, index) => {
+			const session = peekByRun.get(run.runId);
+			const live = !run.state || run.state === "running" || run.state === "queued";
+			return {
+				key: `live:${run.runId}:${index}`,
+				agent: run.agent,
+				task: run.task,
+				live,
+				state: run.state,
+				runId: run.runId,
+				sessionId: session?.sessionId,
+				sessionFile: session?.sessionFile,
+			};
+		})
+		.filter((entry) => entry.live);
+}
+
+/** Finished runs this session, newest first. */
+export function recentPeekRuns(): PeekEntry[] {
+	return [...recentPeek];
+}
 
 export function fleetStatsSnapshot() {
 	return sessionStats.snapshot();
@@ -1053,6 +1093,9 @@ export interface RunSingleAgentOptions {
 	/** Called with the child kill handle (SIGTERM + SIGKILL escalation) the
 	 *  moment the process exists — the run watcher's cancel/abort path. */
 	registerKill?: (kill: () => void) => void;
+	/** Called as soon as the child reports its own pi session, so the caller can
+	 *  map a run id to it (/orchestrator-runs). */
+	onSession?: (info: { sessionId?: string; sessionFile?: string }) => void;
 }
 
 export type RunAgent = (options: RunSingleAgentOptions) => Promise<SingleResult>;
@@ -1078,6 +1121,7 @@ export async function runSingleAgent(opts: RunSingleAgentOptions): Promise<Singl
 		onProgress,
 		sessionOpts,
 		registerKill,
+		onSession,
 	} = opts;
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -1467,6 +1511,10 @@ export async function runSingleAgent(opts: RunSingleAgentOptions): Promise<Singl
 					if (before?.data?.sessionFile) {
 						currentResult.sessionId = before.data.sessionId;
 						currentResult.sessionFile = before.data.sessionFile;
+						onSession?.({
+							sessionId: currentResult.sessionId,
+							sessionFile: currentResult.sessionFile,
+						});
 					}
 					if (sessionOpts.parentSessionFile) {
 						const resp = await rpcWaiters.command(
@@ -1480,6 +1528,10 @@ export async function runSingleAgent(opts: RunSingleAgentOptions): Promise<Singl
 							if (after?.data?.sessionFile) {
 								currentResult.sessionId = after.data.sessionId;
 								currentResult.sessionFile = after.data.sessionFile;
+								onSession?.({
+									sessionId: currentResult.sessionId,
+									sessionFile: currentResult.sessionFile,
+								});
 							}
 						}
 					}
@@ -1778,6 +1830,16 @@ export function registerDelegateTool(pi: any, deps: DelegateDeps): void {
 		},
 		onIdle: () => deps.onIdle(),
 		onSettled: (result) => {
+			recentPeek.unshift({
+				key: `done:${result.agent}:${recentPeek.length}:${Date.now()}`,
+				agent: result.agent,
+				task: result.task,
+				live: false,
+				sessionId: result.sessionId,
+				sessionFile: result.sessionFile,
+				endedAt: Date.now(),
+			});
+			if (recentPeek.length > RECENT_PEEK_LIMIT) recentPeek.length = RECENT_PEEK_LIMIT;
 			sessionStats.record(
 				result.agent,
 				{ input: result.usage.input, output: result.usage.output, contextTokens: result.usage.contextTokens, turns: result.usage.turns },
@@ -2100,6 +2162,9 @@ export function registerDelegateTool(pi: any, deps: DelegateDeps): void {
 						signal: ownedSignal, registerKill, onProgress, onUpdate: partial,
 						makeDetails: (results) => details(mode, results),
 						sessionOpts: { persist: deps.getChildSessions?.() ?? true, parentSessionFile: deps.getParentSessionFile?.(ctx) },
+						// Remember the child's own pi session the moment it exists, so the
+						// picker can open that exact run in a pane.
+						onSession: (info) => peekByRun.set(runId, info),
 					}),
 				};
 			};

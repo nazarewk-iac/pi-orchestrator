@@ -34,8 +34,9 @@ import {
 	type OrchestratorConfig,
 } from "./config.ts";
 import * as fs from "node:fs";
-import { abortActiveRuns, clearFleetWidget, fleetStatsSnapshot, fleetTasksSnapshot, resetFleetStats, hasRunningTasks, idleFleetWidgetLines, registerDelegateTool, type DelegateDeps } from "./delegate.ts";
+import { abortActiveRuns, clearFleetWidget, fleetStatsSnapshot, fleetTasksSnapshot, livePeekRuns, recentPeekRuns, resetFleetStats, hasRunningTasks, idleFleetWidgetLines, registerDelegateTool, type DelegateDeps } from "./delegate.ts";
 import { createFleetPanel, renderFleetPanel } from "./fleet-panel.ts";
+import { entryLabel, formatPeekCommand, peekEntries, peekInvocation } from "./runs-peek.ts";
 import { buildPolicy } from "./policy.ts";
 import { truncateToWidth } from "./width.ts";
 import type { AgentConfig } from "./agents.ts";
@@ -557,6 +558,76 @@ ${policyCache.get()}` };
 		resetFleetStats();
 		if (ctx?.mode === "tui") fleetPanel.start();
 	});
+
+	// ── Peeking into a run ──────────────────────────────────────────────────
+	//
+	// Live and recent children are ordinary pi sessions, so one picker over both
+	// is enough: a live run is forked (the child keeps writing its own file), a
+	// finished run is resumed. Pane creation shells out to zellij, whose server
+	// owns the socket; without zellij we print the equivalent pi command.
+	async function openRunPicker(ctx: any, mode: "live" | "all" = "all"): Promise<void> {
+		if (ctx?.mode !== "tui") {
+			ctx?.ui?.notify("/orchestrator-runs requires TUI mode", "warning");
+			return;
+		}
+		const entries = peekEntries(livePeekRuns(), mode === "live" ? [] : recentPeekRuns());
+		if (entries.length === 0) {
+			ctx.ui.notify("No runs to open yet — delegate something first.", "info");
+			return;
+		}
+		const labels = entries.map(entryLabel);
+		const chosen = await ctx.ui.select("Open a run in a new pane", labels);
+		if (!chosen) return;
+		const entry = entries[labels.indexOf(chosen)];
+		if (!entry) return;
+		const env = {
+			cwd: ctx.cwd ?? process.cwd(),
+			zellijSession: process.env.ZELLIJ_SESSION_NAME,
+			zellijBin: process.env.ZELLIJ_BIN,
+			piBin: process.env.PI_BIN,
+		};
+		const invocation = peekInvocation(entry, env);
+		if (!invocation) {
+			const printable = formatPeekCommand(entry);
+			ctx.ui.notify(
+				printable
+					? `Not inside zellij — run: ${printable}`
+					: "That run recorded no session (persistence off, or it died before setup).",
+				printable ? "info" : "warning",
+			);
+			return;
+		}
+		try {
+			const { spawn } = await import("node:child_process");
+			const child = spawn(invocation.bin, invocation.args, { detached: true, stdio: "ignore" });
+			child.unref();
+			ctx.ui.notify(`Opened ${entry.live ? "a fork of" : "session"} ${entry.agent} in a new pane`, "info");
+		} catch (error) {
+			const printable = formatPeekCommand(entry);
+			ctx.ui.notify(`Could not open a pane (${error instanceof Error ? error.message : String(error)})${printable ? ` — run: ${printable}` : ""}`, "warning");
+		}
+	}
+
+	pi.registerCommand("orchestrator-runs", {
+		description: "Open a live or recent sub-run in a new pane",
+		handler: async (_args: string, ctx: any) => {
+			if (ctx?.ui) lastUi = ctx.ui;
+			await openRunPicker(ctx);
+		},
+	});
+
+	// Same picker on a key. `ctrl+alt+r` is free in pi 1.4.0 (its own shortcuts are
+	// ctrl+alt+c/h/k/x) and in pi-atelier. Guarded so a host without the API (or a
+	// test stub) still loads the extension.
+	if (typeof pi.registerShortcut === "function") {
+		pi.registerShortcut("ctrl+alt+r", {
+			description: "Open a live or recent sub-run in a new pane",
+			handler: async (ctx: any) => {
+				if (ctx?.ui) lastUi = ctx.ui;
+				await openRunPicker(ctx);
+			},
+		});
+	}
 
 	// ── Commands ────────────────────────────────────────────────────────────
 
